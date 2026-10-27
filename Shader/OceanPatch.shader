@@ -48,8 +48,10 @@ Shader "OceanPatch"
                 float _SeaLevel;
                 float _PatchCells;
                 
-                float4 _Wave;
-                float _WaveSpeed;
+                float4 _WaveShapes[4];
+                float4 _WaveMotions[4];
+                int _WaveCount;
+                
                 float _WaveTime;
                 float _StitchEdges;
                 float4 _DebugView;

@@ -12,8 +12,9 @@ public class OceanDomain : MonoBehaviour
     public static readonly int SeaLevelId = Shader.PropertyToID("_SeaLevel");
     public static readonly int PatchCellsId = Shader.PropertyToID("_PatchCells");
 
-    public static readonly int WaveId = Shader.PropertyToID("_Wave");
-    public static readonly int WaveSpeedId = Shader.PropertyToID("_WaveSpeed");
+    private static readonly int WaveShapesId = Shader.PropertyToID("_WaveShapes");
+    private static readonly int WaveMotionsId = Shader.PropertyToID("_WaveMotions");
+    private static readonly int WaveCountId = Shader.PropertyToID("_WaveCount");
     public static readonly int WaveTimeId = Shader.PropertyToID("_WaveTime");
     public static readonly int StitchEdgesId = Shader.PropertyToID("_StitchEdges");
     public static readonly int DebugViewId = Shader.PropertyToID("_DebugView");
@@ -61,7 +62,9 @@ public class OceanDomain : MonoBehaviour
 
     // [SerializeField, Min(0.01f)] float size = 2f;
 
+    private readonly Vector4[] waveShapes = new Vector4[OceanSettings.MaxWaves];
 
+    private readonly Vector4[] waveMotions = new Vector4[OceanSettings.MaxWaves];
 
     void OnEnable()
     {
@@ -164,7 +167,10 @@ public class OceanDomain : MonoBehaviour
             cameras.Add(camera, draw);
         }
 
-        draw.tree.Build(camera, settings, transform.position);
+        int waveCount = settings.WriteWaveData(waveShapes, waveMotions, out Vector3 displacementExtent);
+
+        Vector3 center = transform.position;
+        draw.tree.Build(camera, settings, center, displacementExtent);
         int count = draw.tree.Patches.Count;
 
         if (count == 0)
@@ -179,15 +185,13 @@ public class OceanDomain : MonoBehaviour
         draw.args[4] = 0u;
 
         draw.arguments.SetData(draw.args);
-        draw.properties.SetFloat(SeaLevelId, transform.position.y);
+        draw.properties.SetFloat(SeaLevelId, center.y);
         draw.properties.SetFloat(PatchCellsId, OceanSettings.Cells);
 
-        float angle = settings.waveDirection * Mathf.Deg2Rad;
-        float amplitude = Mathf.Max(0f, settings.waveAmplitude);
-        float waveNumber = 2f * Mathf.PI / Mathf.Max(0.1f, settings.waveLength);
-
-        draw.properties.SetVector(WaveId, new Vector4(Mathf.Cos(angle), Mathf.Sign(angle), amplitude, waveNumber));
-        draw.properties.SetFloat(WaveSpeedId, settings.waveSpeed);
+        draw.properties.SetInteger(WaveCountId, waveCount);
+        draw.properties.SetVectorArray(WaveShapesId, waveShapes);
+        draw.properties.SetVectorArray(WaveMotionsId, waveMotions);
+        draw.properties.SetFloat(WaveTimeId, Time.time);
         draw.properties.SetFloat(StitchEdgesId, settings.stitchEdges ? 1f : 0f);
         draw.properties.SetVector(DebugViewId, new Vector4(settings.showLod ? 1f : 0f, settings.showGrid ? 1f : 0f, settings.showEdges ? 1f : 0f, settings.showNormals ? 1f : 0f));
 

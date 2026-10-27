@@ -25,7 +25,7 @@ public class OceanQuadtree
     float seaLevel;
     float pixelScale;
     int maxDepth;
-    float verticalExtent;
+    Vector3 boundsPadding;
 
     public void EvaluateAndAddLeaf(Node node)
     {
@@ -33,7 +33,7 @@ public class OceanQuadtree
 
         var bounds = new Bounds(
             new Vector3(rect.x + rect.z * 0.5f, seaLevel, rect.y + rect.z * 0.5f),
-            new Vector3(rect.z, verticalExtent * 2f, rect.z)
+            new Vector3(rect.z, 0f, rect.z) + boundsPadding * 2f
         );
         node.visible = GeometryUtility.TestPlanesAABB(planes, bounds);
         node.error = 0f;
@@ -55,11 +55,11 @@ public class OceanQuadtree
         }
         leaves.Add(node.Key, node);
     }
-    public void Build(Camera view, OceanSettings settings, Vector3 center)
+    public void Build(Camera view, OceanSettings settings, Vector3 center, Vector3 displacementExtent)
     {
         camera = view;
         seaLevel = center.y;
-        verticalExtent = Mathf.Max(0f, settings.waveAmplitude) + 0.05f;
+        boundsPadding = displacementExtent + Vector3.one * 0.05f;
         domainSize = Mathf.Max(1f, settings.size);
         maxDepth = Mathf.Clamp(settings.maxDepth, 0, 10);
         origin = new Vector2(

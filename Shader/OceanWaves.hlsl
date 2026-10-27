@@ -1,20 +1,52 @@
 #ifndef OCEAN_WAVES_INCLUDED
 #define OCEAN_WAVES_INCLUDED
 
-void OceanEvaluateSurface(float2 p, out float3 positionWS, out float3 normalWS)
+void OceanEvaluateSurface(
+    float2 p,
+    out float3 positionWS,
+    out float3 normalWS)
 {
-    float phase = _Wave.w * (dot(_Wave.xy, p) - _WaveSpeed * _WaveTime);
+    positionWS = float3(p.x, _SeaLevel, p.y);
 
-    float sine;
-    float cosine;
-    sincos(phase, sine, cosine);
+    float3 tangentX = float3(1.0, 0.0, 0.0);
+    float3 tangentZ = float3(0.0, 0.0, 1.0);
 
-    float height = _Wave.z * sine;
-    float slope = _Wave.z * _Wave.w * cosine;
+    [loop]
+    for (int i = 0; i < _WaveCount; i++)
+    {
+        float4 shape = _WaveShapes[i];
+        float4 motion = _WaveMotions[i];
 
-    positionWS = float3(p.x, _SeaLevel + height, p.y);
-    normalWS = normalize(float3(-slope * _Wave.x, 1.0, -slope * _Wave.y));
+        float2 direction = shape.xy;
+        float amplitude = shape.z;
+        float k = shape.w;
+
+        float horizontal = motion.x;
+        float speed = motion.y;
+
+        float phase = k * (dot(direction, p) - speed * _WaveTime);
+
+        float sine;
+        float cosine;
+        sincos(phase, sine, cosine);
+
+        positionWS += float3(direction.x * horizontal * cosine,
+            amplitude * sine, direction.y * horizontal * cosine);
+
+        float verticalSlope = amplitude * k * cosine;
+        float horizontalSlope = horizontal * k * sine;
+
+        float mixed = -horizontalSlope * direction.x * direction.y;
+
+        tangentX += float3(-horizontalSlope * direction.x * direction.x,
+            verticalSlope * direction.x, mixed);
+        tangentZ += float3(mixed, verticalSlope * direction.y,
+            -horizontalSlope * direction.y * direction.y);
+    }
+
+    normalWS = normalize(cross(tangentZ, tangentX));
 }
+
 
 void OceanStitchEdges(float2 p, float2 axis, float cell, float vertexIndex, inout float3 positionWS, inout float3 normalWS)
 {
