@@ -1,8 +1,9 @@
-Shader "OceanPatch"
+Shader "Ocean/Patch"
 {
     Properties
     {
     }
+
     SubShader
     {
         Tags
@@ -11,7 +12,6 @@ Shader "OceanPatch"
             "RenderType" = "Opaque"
             "Queue" = "Geometry"
         }
-
 
         Pass
         {
@@ -44,19 +44,27 @@ Shader "OceanPatch"
 
             StructuredBuffer<OceanPatch> _Patches;
 
+            TEXTURE2D(_OceanCoastMap);
+
             CBUFFER_START(UnityPerMaterial)
                 float _SeaLevel;
                 float _PatchCells;
-                
+
                 float4 _WaveShapes[4];
                 float4 _WaveMotions[4];
                 int _WaveCount;
-                
+
                 float _WaveTime;
                 float _StitchEdges;
                 float4 _DebugView;
+
+                float4 _OceanRect;
+                float4 _ShoreWave;
+                float _HasCoastMap;
             CBUFFER_END
 
+            #include "OceanCoordinates.hlsl"
+            #include "OceanCoastData.hlsl"
             #include "OceanWaves.hlsl"
 
             struct Attributes
@@ -83,16 +91,25 @@ Shader "OceanPatch"
                 float3 positionWS;
                 float3 normalWS;
 
-                OceanEvaluatePatch(input.positionOS.xz, patch.rect, patch.edges, positionWS, normalWS);
+                OceanEvaluatePatch(
+                    input.positionOS.xz,
+                    patch.rect,
+                    patch.edges,
+                    positionWS,
+                    normalWS);
 
                 output.positionCS = TransformWorldToHClip(positionWS);
                 output.normalWS = normalWS;
                 output.uv = input.positionOS.xz;
 
-                output.color = 0.5 + 0.4 * cos(float3(0.0, 2.0, 4.0) + patch.rect.w * 1.7);
+                output.color = 0.5 + 0.4 * cos(
+                    float3(0.0, 2.0, 4.0) + patch.rect.w * 1.7);
 
                 float cell = patch.rect.z / _PatchCells;
-                output.coarseEdges = step(float4(1.5, 1.5, 1.5, 1.5), patch.edges / cell);
+
+                output.coarseEdges = step(
+                    float4(1.5, 1.5, 1.5, 1.5),
+                    patch.edges / cell);
 
                 return output;
             }
@@ -100,13 +117,19 @@ Shader "OceanPatch"
             half4 Frag(Varyings input) : SV_Target
             {
                 float3 normalWS = normalize(input.normalWS);
+
                 if (_DebugView.w > 0.5)
                     return half4(normalWS * 0.5 + 0.5, 1.0);
 
-                float3 color = lerp(half3(0.03, 0.25, 0.35), input.color, _DebugView.x);
+                float3 color = lerp(
+                    half3(0.03, 0.25, 0.35),
+                    input.color,
+                    _DebugView.x);
 
                 Light mainLight = GetMainLight();
-                half diffuse = saturate(dot(normalWS, mainLight.direction));
+
+                half diffuse = saturate(
+                    dot(normalWS, mainLight.direction));
 
                 color *= 0.2 + mainLight.color * diffuse;
 
@@ -114,23 +137,50 @@ Shader "OceanPatch"
                 float2 edge = min(frac(cell), 1.0 - frac(cell));
 
                 edge /= max(fwidth(cell), 0.0001);
-                float grid = 1.0 - smoothstep(0.5, 1.0, min(edge.x, edge.y));
 
-                color = lerp(color, color * 0.25, grid * _DebugView.y);
-                float4 distanceToEdge = float4(input.uv.x, 1.0 - input.uv.x, input.uv.y, 1.0 - input.uv.y);
-                float2 pixelWidth = max(fwidth(input.uv), 0.00001);
+                float grid = 1.0 - smoothstep(
+                    0.5,
+                    1.0,
+                    min(edge.x, edge.y));
 
-                float4 edgePixels = distanceToEdge / float4(pixelWidth.x, pixelWidth.x, pixelWidth.y, pixelWidth.y);
+                color = lerp(
+                    color,
+                    color * 0.25,
+                    grid * _DebugView.y);
 
-                float4 marks = (1.0 - smoothstep(0.75, 2.25, edgePixels)) * input.coarseEdges;
+                float4 distanceToEdge = float4(
+                    input.uv.x,
+                    1.0 - input.uv.x,
+                    input.uv.y,
+                    1.0 - input.uv.y);
 
-                float highlight = max(max(marks.x, marks.y), max(marks.z, marks.w));
-                color = lerp(color, half3(1.0, 0.15, 0.03), highlight * _DebugView.z);
+                float2 pixelWidth = max(
+                    fwidth(input.uv),
+                    0.00001);
+
+                float4 edgePixels = distanceToEdge / float4(
+                    pixelWidth.x,
+                    pixelWidth.x,
+                    pixelWidth.y,
+                    pixelWidth.y);
+
+                float4 marks =
+                    (1.0 - smoothstep(0.75, 2.25, edgePixels))
+                    * input.coarseEdges;
+
+                float highlight = max(
+                    max(marks.x, marks.y),
+                    max(marks.z, marks.w));
+
+                color = lerp(
+                    color,
+                    half3(1.0, 0.15, 0.03),
+                    highlight * _DebugView.z);
 
                 return half4(color, 1.0);
             }
-            ENDHLSL
 
+            ENDHLSL
         }
     }
 }

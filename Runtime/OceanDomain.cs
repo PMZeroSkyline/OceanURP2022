@@ -3,7 +3,7 @@ using System.Threading;
 using UnityEngine;
 using UnityEngine.Rendering;
 
-[DisallowMultipleComponent]
+[ExecuteAlways, DisallowMultipleComponent]
 public class OceanDomain : MonoBehaviour
 {
     public static HashSet<OceanDomain> Active = new HashSet<OceanDomain>();
@@ -16,8 +16,20 @@ public class OceanDomain : MonoBehaviour
     private static readonly int WaveMotionsId = Shader.PropertyToID("_WaveMotions");
     private static readonly int WaveCountId = Shader.PropertyToID("_WaveCount");
     public static readonly int WaveTimeId = Shader.PropertyToID("_WaveTime");
+
     public static readonly int StitchEdgesId = Shader.PropertyToID("_StitchEdges");
     public static readonly int DebugViewId = Shader.PropertyToID("_DebugView");
+    private static readonly int OceanRectId = Shader.PropertyToID("_OceanRect");
+
+    static readonly int HeightMapId = Shader.PropertyToID("_OceanHeightMap");
+    static readonly int HeightRangeId = Shader.PropertyToID("_HeightRange");
+    static readonly int HasHeightMapId = Shader.PropertyToID("_HasHeightMap");
+
+    static readonly int CoastMapId = Shader.PropertyToID("_OceanCoastMap");
+    static readonly int HasCoastMapId = Shader.PropertyToID("_HasCoastMap");
+    static readonly int CoastDebugId = Shader.PropertyToID("_CoastDebug");
+    static readonly int ShoreWaveId = Shader.PropertyToID("_ShoreWave");
+
 
     class CameraDraw
     {
@@ -50,22 +62,24 @@ public class OceanDomain : MonoBehaviour
         }
     }
 
-    [SerializeField] OceanSettings settings;
+    [SerializeField] public OceanSettings settings;
+
+
     Dictionary<Camera, CameraDraw> cameras = new Dictionary<Camera, CameraDraw>();
     List<Camera> obsolete = new List<Camera>();
 
-    // [SerializeField] Material surfaceMaterial;    
     Mesh patchMesh;
     Material runtimeMaterial;
-    // ComputeBuffer patchBuffer;
-    // ComputeBuffer argsBuffer;
-
-    // [SerializeField, Min(0.01f)] float size = 2f;
 
     private readonly Vector4[] waveShapes = new Vector4[OceanSettings.MaxWaves];
 
     private readonly Vector4[] waveMotions = new Vector4[OceanSettings.MaxWaves];
 
+    [SerializeField] public OceanHeightData bakedHeight;
+    public Texture2D HeightTexture => bakedHeight != null ? bakedHeight.Height : null;
+    public bool HasValidHeight => bakedHeight != null && bakedHeight.Matches(settings, transform.position);
+    public Texture2D CoastTexture => bakedHeight != null ? bakedHeight.Coast : null;
+    public bool HasValidCoast => HasValidHeight && bakedHeight.HasCoast;
     void OnEnable()
     {
         if (settings == null || settings.surfaceMaterial == null)
@@ -96,13 +110,20 @@ public class OceanDomain : MonoBehaviour
         obsolete.Clear();
 
         if (patchMesh != null)
-            Destroy(patchMesh);
+            DestroyOwned(patchMesh);
 
         if (runtimeMaterial != null)
-            Destroy(runtimeMaterial);
+            DestroyOwned(runtimeMaterial);
 
         patchMesh = null;
         runtimeMaterial = null;
+    }
+    static void DestroyOwned(UnityEngine.Object obj)
+    {
+        if (Application.isPlaying)
+            Destroy(obj);
+        else
+            DestroyImmediate(obj);
     }
     Mesh CreatePatchMesh(int cells)
     {
@@ -169,6 +190,16 @@ public class OceanDomain : MonoBehaviour
 
         int waveCount = settings.WriteWaveData(waveShapes, waveMotions, out Vector3 displacementExtent);
 
+        bool hasCoast = HasValidCoast;
+        draw.properties.SetFloat(HasCoastMapId, hasCoast ? 1f : 0f);
+        draw.properties.SetTexture(CoastMapId, hasCoast ? bakedHeight.Coast : Texture2D.blackTexture);
+        draw.properties.SetVector(CoastDebugId, new Vector4((float)settings.coastView, settings.coastDisplayRange, settings.coastContourSpacing, 0f));
+        
+        Vector4 shoreWave = settings.GetShoreWaveData();
+        if (!hasCoast)
+            shoreWave.x = 0f;
+        displacementExtent.y += shoreWave.x;
+
         Vector3 center = transform.position;
         draw.tree.Build(camera, settings, center, displacementExtent);
         int count = draw.tree.Patches.Count;
@@ -191,9 +222,20 @@ public class OceanDomain : MonoBehaviour
         draw.properties.SetInteger(WaveCountId, waveCount);
         draw.properties.SetVectorArray(WaveShapesId, waveShapes);
         draw.properties.SetVectorArray(WaveMotionsId, waveMotions);
-        draw.properties.SetFloat(WaveTimeId, Time.time);
+        draw.properties.SetFloat(WaveTimeId, Application.isPlaying ? Time.time : Time.realtimeSinceStartup);
         draw.properties.SetFloat(StitchEdgesId, settings.stitchEdges ? 1f : 0f);
         draw.properties.SetVector(DebugViewId, new Vector4(settings.showLod ? 1f : 0f, settings.showGrid ? 1f : 0f, settings.showEdges ? 1f : 0f, settings.showNormals ? 1f : 0f));
+
+        float size = Mathf.Max(1f, settings.size);
+        draw.properties.SetVector(OceanRectId, new Vector4(center.x - size * 0.5f, center.z - size * 0.5f, size, 1f / size));
+
+        bool hasHeight = HasValidHeight;
+        draw.properties.SetFloat(HasHeightMapId, hasHeight ? 1f : 0f);
+        draw.properties.SetTexture(HeightMapId, hasHeight ? bakedHeight.Height : Texture2D.blackTexture);
+        Vector2 range = hasHeight ? bakedHeight.Range : Vector2.zero;
+        draw.properties.SetVector(HeightRangeId, new Vector4(range.x, range.y, 0f, 0f));
+
+        draw.properties.SetVector(ShoreWaveId, shoreWave);
 
         cmd.DrawMeshInstancedIndirect(
             patchMesh,

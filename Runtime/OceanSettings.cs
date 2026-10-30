@@ -54,6 +54,7 @@ public class OceanSettings : ScriptableObject
             horizontalRatio = 0.6f
         }
     };
+
     public bool stitchEdges = true;
 
     [Header("Debug")]
@@ -62,6 +63,62 @@ public class OceanSettings : ScriptableObject
     public bool showEdges = true;
     public bool showNormals = false;
 
+
+    [Header("Height Bake")]
+    public LayerMask groundLayers = ~0;
+    [Range(16, 2048)] public int bakeResolution = 512;
+    [Min(0.1f)] public float captureBelow = 50f;
+    [Min(0.1f)] public float captureAbove = 50f;
+
+    public enum CoastView
+    {
+        Distance,
+        OffshoreDirection,
+        NearestUV,
+        LandWater
+    }
+    [Header("Coast Bake")]
+    public ComputeShader coastCompute;
+
+    [Header("Coast Preview")]
+    public CoastView coastView = CoastView.Distance;
+
+    [Min(0.01f)] public float coastDisplayRange = 100f;
+    [Min(0.01f)] public float coastContourSpacing = 10f;
+
+    [Header("Shore Wave")]
+    [Min(0f)] public float shoreAmplitude = 1f;
+    [Min(0.1f)] public float shoreWavelength = 20f;
+    public float shoreSpeed = 2f;
+    [Min(0.1f)] public float shoreRange = 60f;
+
+    [Header("Shore LUT")]
+    public Vector2Int shoreLutResolution = new Vector2Int(256, 64);
+
+    public AnimationCurve shoreProfile = new AnimationCurve(
+        new Keyframe(0f, 0f, 2f * Mathf.PI, 2f * Mathf.PI),
+        new Keyframe(0.25f, 1f, 0f, 0f),
+        new Keyframe(0.5f, 0f, -2f * Mathf.PI, -2f * Mathf.PI),
+        new Keyframe(0.75f, -1f, 0f, 0f),
+        new Keyframe(1f, 0f, 2f * Mathf.PI, 2f * Mathf.PI));
+
+    public AnimationCurve shoreEnvelope = new AnimationCurve(
+        new Keyframe(0f, 0f, 0f, 0f),
+        new Keyframe(0.5f, 1f, 0f, 0f),
+        new Keyframe(1f, 0f, 0f, 0f));
+
+    [HideInInspector] public Texture2D shoreLut;
+    [HideInInspector] public float shoreLutMaxHeight;
+
+
+    public Vector4 GetShoreWaveData()
+    {
+        return new Vector4(
+            Mathf.Max(0f, shoreAmplitude),
+            2f * Mathf.PI / Mathf.Max(0.1f, shoreWavelength),
+            shoreSpeed,
+            Mathf.Max(0.1f, shoreRange));
+    }
     public int WriteWaveData(Vector4[] shapes, Vector4[] motions, out Vector3 displacementExtent)
     {
         int count = Mathf.Min(waves == null ? 0 : waves.Length, MaxWaves);

@@ -1,0 +1,79 @@
+#pragma kernel InitSeeds
+#pragma kernel JumpFlood
+
+Texture2D<float4> _OceanHeightMap;
+
+Texture2D<float4> _Read;
+RWTexture2D<float4> _Write;
+
+int2 _Size;
+int _Step;
+float _SeaLevel;
+
+#include "OceanCoastSeeds.hlsl"
+
+float SeedDistanceSq(float2 seedUV, float2 pixelUV)
+{
+    float2 delta = seedUV - pixelUV;
+    return dot(delta, delta);
+}
+
+[numthreads(8, 8, 1)]
+void InitSeeds(uint3 id : SV_DispatchThreadID)
+{
+    int2 pixel = int2(id.xy);
+
+    if (any(pixel >= _Size))
+        return;
+
+    _Write[pixel] = OceanFindCoastSeed(
+        pixel,
+        _Size,
+        _SeaLevel);
+}
+
+[numthreads(8, 8, 1)]
+void JumpFlood(uint3 id : SV_DispatchThreadID)
+{
+    int2 pixel = int2(id.xy);
+
+    if (any(pixel >= _Size))
+        return;
+
+    float2 uv = (float2(pixel) + 0.5) / float2(_Size);
+
+    float4 current = _Read.Load(int3(pixel, 0));
+    float4 best = current;
+
+    float bestDistanceSq = current.z > 0.5 ? SeedDistanceSq(current.xy, uv) : 1e20;
+
+    [unroll]
+    for (int y = -1; y <= 1; y++)
+    {
+        [unroll]
+        for (int x = -1; x <= 1; x++)
+        {
+            int2 neighbour = pixel + int2(x, y) * _Step;
+
+            if (any(neighbour < 0) || any(neighbour >= _Size))
+                continue;
+
+            float4 candidate = _Read.Load(int3(neighbour, 0));
+
+            if (candidate.z < 0.5)
+                continue;
+
+            float distanceSq = SeedDistanceSq(candidate.xy, uv);
+
+            if (distanceSq < bestDistanceSq)
+            {
+                bestDistanceSq = distanceSq;
+                best = candidate;
+            }
+        }
+    }
+
+    best.w = current.w;
+
+    _Write[pixel] = best;
+}
