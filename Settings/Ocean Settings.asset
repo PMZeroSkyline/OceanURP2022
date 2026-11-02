@@ -12,23 +12,23 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 9bbdfaee6d350b9429f0aaaf4facac70, type: 3}
   m_Name: Ocean Settings
   m_EditorClassIdentifier: 
-  surfaceMaterial: {fileID: 2100000, guid: 6faf95db23b0a564f96faa987b01fca8, type: 2}
+  surfaceMaterial: {fileID: 2100000, guid: f413232b410ad7e4aaaf07f67771cf4c, type: 2}
   size: 1000
   maxDepth: 8
   pixelsPerCell: 12
   maxPatches: 512
   waves:
-  - amplitude: 0
+  - amplitude: 0.1
     wavelength: 24
     speed: 4
     direction: 35
     horizontalRatio: 0.8
-  - amplitude: 0
+  - amplitude: 0.2
     wavelength: 15
     speed: 3
     direction: 105
     horizontalRatio: 0.7
-  - amplitude: 0
+  - amplitude: 0.3
     wavelength: 9
     speed: 2
     direction: 165

@@ -1,40 +1,74 @@
 using System.Collections.Generic;
-using System.Threading;
 using UnityEngine;
 using UnityEngine.Rendering;
 
 [ExecuteAlways, DisallowMultipleComponent]
 public class OceanDomain : MonoBehaviour
 {
-    public static HashSet<OceanDomain> Active = new HashSet<OceanDomain>();
+    public static HashSet<OceanDomain> Active =
+        new HashSet<OceanDomain>();
 
-    public static readonly int PatchesId = Shader.PropertyToID("_Patches");
-    public static readonly int SeaLevelId = Shader.PropertyToID("_SeaLevel");
-    public static readonly int PatchCellsId = Shader.PropertyToID("_PatchCells");
+    public static readonly int PatchesId =
+        Shader.PropertyToID("_Patches");
 
-    private static readonly int WaveShapesId = Shader.PropertyToID("_WaveShapes");
-    private static readonly int WaveMotionsId = Shader.PropertyToID("_WaveMotions");
-    private static readonly int WaveCountId = Shader.PropertyToID("_WaveCount");
-    public static readonly int WaveTimeId = Shader.PropertyToID("_WaveTime");
+    public static readonly int SeaLevelId =
+        Shader.PropertyToID("_SeaLevel");
 
-    public static readonly int StitchEdgesId = Shader.PropertyToID("_StitchEdges");
-    public static readonly int DebugViewId = Shader.PropertyToID("_DebugView");
-    private static readonly int OceanRectId = Shader.PropertyToID("_OceanRect");
+    public static readonly int PatchCellsId =
+        Shader.PropertyToID("_PatchCells");
 
-    static readonly int HeightMapId = Shader.PropertyToID("_OceanHeightMap");
-    static readonly int HeightRangeId = Shader.PropertyToID("_HeightRange");
-    static readonly int HasHeightMapId = Shader.PropertyToID("_HasHeightMap");
+    static readonly int WaveShapesId =
+        Shader.PropertyToID("_WaveShapes");
 
-    static readonly int CoastMapId = Shader.PropertyToID("_OceanCoastMap");
-    static readonly int HasCoastMapId = Shader.PropertyToID("_HasCoastMap");
-    static readonly int CoastDebugId = Shader.PropertyToID("_CoastDebug");
-    static readonly int ShoreWaveId = Shader.PropertyToID("_ShoreWave");
+    static readonly int WaveMotionsId =
+        Shader.PropertyToID("_WaveMotions");
 
+    static readonly int WaveCountId =
+        Shader.PropertyToID("_WaveCount");
+
+    public static readonly int WaveTimeId =
+        Shader.PropertyToID("_WaveTime");
+
+    public static readonly int StitchEdgesId =
+        Shader.PropertyToID("_StitchEdges");
+
+    public static readonly int DebugViewId =
+        Shader.PropertyToID("_DebugView");
+
+    static readonly int OceanRectId =
+        Shader.PropertyToID("_OceanRect");
+
+    static readonly int HeightMapId =
+        Shader.PropertyToID("_OceanHeightMap");
+
+    static readonly int HeightRangeId =
+        Shader.PropertyToID("_HeightRange");
+
+    static readonly int HasHeightMapId =
+        Shader.PropertyToID("_HasHeightMap");
+
+    static readonly int CoastMapId =
+        Shader.PropertyToID("_OceanCoastMap");
+
+    static readonly int HasCoastMapId =
+        Shader.PropertyToID("_HasCoastMap");
+
+    static readonly int CoastDebugId =
+        Shader.PropertyToID("_CoastDebug");
+
+    static readonly int ShoreWaveId =
+        Shader.PropertyToID("_ShoreWave");
+
+    static readonly int ShoreLutId =
+        Shader.PropertyToID("_OceanShoreLut");
 
     class CameraDraw
     {
         public OceanQuadtree tree = new OceanQuadtree();
-        public MaterialPropertyBlock properties = new MaterialPropertyBlock();
+
+        public MaterialPropertyBlock properties =
+            new MaterialPropertyBlock();
+
         public uint[] args = new uint[5];
         public ComputeBuffer patches;
         public ComputeBuffer arguments;
@@ -43,43 +77,65 @@ public class OceanDomain : MonoBehaviour
         {
             if (arguments == null)
             {
-                arguments = new ComputeBuffer(1, sizeof(uint) * 5, ComputeBufferType.IndirectArguments);
+                arguments = new ComputeBuffer(
+                    1,
+                    sizeof(uint) * 5,
+                    ComputeBufferType.IndirectArguments);
             }
+
             if (patches != null && patches.count >= count)
-            {
                 return;
-            }
+
             patches?.Release();
-            patches = new ComputeBuffer(Mathf.NextPowerOfTwo(count), OceanPatch.Stride, ComputeBufferType.Structured);
+
+            patches = new ComputeBuffer(
+                Mathf.NextPowerOfTwo(count),
+                OceanPatch.Stride,
+                ComputeBufferType.Structured);
+
             properties.SetBuffer(PatchesId, patches);
         }
+
         public void Dispose()
         {
             patches?.Release();
             arguments?.Release();
+
             patches = null;
             arguments = null;
         }
     }
 
     [SerializeField] public OceanSettings settings;
+    [SerializeField] public OceanHeightData bakedHeight;
 
+    readonly Dictionary<Camera, CameraDraw> cameras =
+        new Dictionary<Camera, CameraDraw>();
 
-    Dictionary<Camera, CameraDraw> cameras = new Dictionary<Camera, CameraDraw>();
-    List<Camera> obsolete = new List<Camera>();
+    readonly List<Camera> obsolete = new List<Camera>();
+
+    readonly Vector4[] waveShapes =
+        new Vector4[OceanSettings.MaxWaves];
+
+    readonly Vector4[] waveMotions =
+        new Vector4[OceanSettings.MaxWaves];
 
     Mesh patchMesh;
     Material runtimeMaterial;
 
-    private readonly Vector4[] waveShapes = new Vector4[OceanSettings.MaxWaves];
+    public Texture2D HeightTexture =>
+        bakedHeight != null ? bakedHeight.Height : null;
 
-    private readonly Vector4[] waveMotions = new Vector4[OceanSettings.MaxWaves];
+    public Texture2D CoastTexture =>
+        bakedHeight != null ? bakedHeight.Coast : null;
 
-    [SerializeField] public OceanHeightData bakedHeight;
-    public Texture2D HeightTexture => bakedHeight != null ? bakedHeight.Height : null;
-    public bool HasValidHeight => bakedHeight != null && bakedHeight.Matches(settings, transform.position);
-    public Texture2D CoastTexture => bakedHeight != null ? bakedHeight.Coast : null;
-    public bool HasValidCoast => HasValidHeight && bakedHeight.HasCoast;
+    public bool HasValidHeight =>
+        bakedHeight != null
+        && bakedHeight.Matches(settings, transform.position);
+
+    public bool HasValidCoast =>
+        HasValidHeight && bakedHeight.HasCoast;
+
     void OnEnable()
     {
         if (settings == null || settings.surfaceMaterial == null)
@@ -95,16 +151,16 @@ public class OceanDomain : MonoBehaviour
             name = "Ocean Runtime Material",
             enableInstancing = true
         };
+
         Active.Add(this);
     }
+
     void OnDisable()
     {
         Active.Remove(this);
 
         foreach (CameraDraw draw in cameras.Values)
-        {
             draw.Dispose();
-        }
 
         cameras.Clear();
         obsolete.Clear();
@@ -118,6 +174,7 @@ public class OceanDomain : MonoBehaviour
         patchMesh = null;
         runtimeMaterial = null;
     }
+
     static void DestroyOwned(UnityEngine.Object obj)
     {
         if (Application.isPlaying)
@@ -125,6 +182,7 @@ public class OceanDomain : MonoBehaviour
         else
             DestroyImmediate(obj);
     }
+
     Mesh CreatePatchMesh(int cells)
     {
         int stride = cells + 1;
@@ -138,11 +196,12 @@ public class OceanDomain : MonoBehaviour
             for (int x = 0; x <= cells; x++)
             {
                 int vertex = z * stride + x;
+
                 vertices[vertex] = new Vector3(
                     x / (float)cells,
                     0f,
-                    z / (float)cells
-                );
+                    z / (float)cells);
+
                 normals[vertex] = Vector3.up;
             }
         }
@@ -175,12 +234,11 @@ public class OceanDomain : MonoBehaviour
             triangles = indices
         };
     }
+
     public void Draw(CommandBuffer cmd, Camera camera)
     {
         if (settings == null || runtimeMaterial == null)
-        {
             return;
-        }
 
         if (!cameras.TryGetValue(camera, out CameraDraw draw))
         {
@@ -188,27 +246,42 @@ public class OceanDomain : MonoBehaviour
             cameras.Add(camera, draw);
         }
 
-        int waveCount = settings.WriteWaveData(waveShapes, waveMotions, out Vector3 displacementExtent);
+        int waveCount = settings.WriteWaveData(
+            waveShapes,
+            waveMotions,
+            out Vector3 displacementExtent);
 
         bool hasCoast = HasValidCoast;
-        draw.properties.SetFloat(HasCoastMapId, hasCoast ? 1f : 0f);
-        draw.properties.SetTexture(CoastMapId, hasCoast ? bakedHeight.Coast : Texture2D.blackTexture);
-        draw.properties.SetVector(CoastDebugId, new Vector4((float)settings.coastView, settings.coastDisplayRange, settings.coastContourSpacing, 0f));
-        
+
+        Texture2D shoreLut = settings.shoreLut;
+        bool hasLut = shoreLut != null
+            && shoreLut.width >= 2
+            && shoreLut.height >= 2
+            && shoreLut.format == TextureFormat.RGBAFloat;
+
         Vector4 shoreWave = settings.GetShoreWaveData();
-        if (!hasCoast)
+
+        if (!hasCoast || !hasLut)
             shoreWave.x = 0f;
-        displacementExtent.y += shoreWave.x;
+
+        displacementExtent.y += shoreWave.x
+            * Mathf.Max(0f, settings.shoreLutMaxHeight);
 
         Vector3 center = transform.position;
-        draw.tree.Build(camera, settings, center, displacementExtent);
-        int count = draw.tree.Patches.Count;
 
+        draw.tree.Build(
+            camera,
+            settings,
+            center,
+            displacementExtent);
+
+        int count = draw.tree.Patches.Count;
         if (count == 0)
             return;
 
         draw.EnsureCapacity(count);
         draw.patches.SetData(draw.tree.Patches);
+
         draw.args[0] = patchMesh.GetIndexCount(0);
         draw.args[1] = (uint)count;
         draw.args[2] = patchMesh.GetIndexStart(0);
@@ -216,26 +289,77 @@ public class OceanDomain : MonoBehaviour
         draw.args[4] = 0u;
 
         draw.arguments.SetData(draw.args);
+
         draw.properties.SetFloat(SeaLevelId, center.y);
         draw.properties.SetFloat(PatchCellsId, OceanSettings.Cells);
 
         draw.properties.SetInteger(WaveCountId, waveCount);
         draw.properties.SetVectorArray(WaveShapesId, waveShapes);
         draw.properties.SetVectorArray(WaveMotionsId, waveMotions);
-        draw.properties.SetFloat(WaveTimeId, Application.isPlaying ? Time.time : Time.realtimeSinceStartup);
-        draw.properties.SetFloat(StitchEdgesId, settings.stitchEdges ? 1f : 0f);
-        draw.properties.SetVector(DebugViewId, new Vector4(settings.showLod ? 1f : 0f, settings.showGrid ? 1f : 0f, settings.showEdges ? 1f : 0f, settings.showNormals ? 1f : 0f));
+
+        draw.properties.SetFloat(
+            WaveTimeId,
+            Application.isPlaying ? Time.time : Time.realtimeSinceStartup);
+
+        draw.properties.SetFloat(
+            StitchEdgesId,
+            settings.stitchEdges ? 1f : 0f);
+
+        draw.properties.SetVector(
+            DebugViewId,
+            new Vector4(
+                settings.showLod ? 1f : 0f,
+                settings.showGrid ? 1f : 0f,
+                settings.showEdges ? 1f : 0f,
+                settings.showNormals ? 1f : 0f));
 
         float size = Mathf.Max(1f, settings.size);
-        draw.properties.SetVector(OceanRectId, new Vector4(center.x - size * 0.5f, center.z - size * 0.5f, size, 1f / size));
+
+        draw.properties.SetVector(
+            OceanRectId,
+            new Vector4(
+                center.x - size * 0.5f,
+                center.z - size * 0.5f,
+                size,
+                1f / size));
 
         bool hasHeight = HasValidHeight;
-        draw.properties.SetFloat(HasHeightMapId, hasHeight ? 1f : 0f);
-        draw.properties.SetTexture(HeightMapId, hasHeight ? bakedHeight.Height : Texture2D.blackTexture);
+
+        draw.properties.SetFloat(
+            HasHeightMapId,
+            hasHeight ? 1f : 0f);
+
+        draw.properties.SetTexture(
+            HeightMapId,
+            hasHeight ? bakedHeight.Height : Texture2D.blackTexture);
+
         Vector2 range = hasHeight ? bakedHeight.Range : Vector2.zero;
-        draw.properties.SetVector(HeightRangeId, new Vector4(range.x, range.y, 0f, 0f));
+
+        draw.properties.SetVector(
+            HeightRangeId,
+            new Vector4(range.x, range.y, 0f, 0f));
+
+        draw.properties.SetFloat(
+            HasCoastMapId,
+            hasCoast ? 1f : 0f);
+
+        draw.properties.SetTexture(
+            CoastMapId,
+            hasCoast ? bakedHeight.Coast : Texture2D.blackTexture);
+
+        draw.properties.SetVector(
+            CoastDebugId,
+            new Vector4(
+                (float)settings.coastView,
+                settings.coastDisplayRange,
+                settings.coastContourSpacing,
+                0f));
 
         draw.properties.SetVector(ShoreWaveId, shoreWave);
+
+        draw.properties.SetTexture(
+            ShoreLutId,
+            hasLut ? shoreLut : Texture2D.blackTexture);
 
         cmd.DrawMeshInstancedIndirect(
             patchMesh,
@@ -244,17 +368,19 @@ public class OceanDomain : MonoBehaviour
             0,
             draw.arguments,
             0,
-            draw.properties
-        );
+            draw.properties);
     }
+
     void LateUpdate()
     {
         obsolete.Clear();
+
         foreach (var pair in cameras)
         {
             if (pair.Key == null)
                 obsolete.Add(pair.Key);
         }
+
         foreach (Camera camera in obsolete)
         {
             cameras[camera].Dispose();

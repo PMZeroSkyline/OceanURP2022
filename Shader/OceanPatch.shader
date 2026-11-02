@@ -45,6 +45,7 @@ Shader "Ocean/Patch"
             StructuredBuffer<OceanPatch> _Patches;
 
             TEXTURE2D(_OceanCoastMap);
+            TEXTURE2D(_OceanShoreLut);
 
             CBUFFER_START(UnityPerMaterial)
                 float _SeaLevel;
@@ -65,6 +66,7 @@ Shader "Ocean/Patch"
 
             #include "OceanCoordinates.hlsl"
             #include "OceanCoastData.hlsl"
+            #include "OceanShoreLut.hlsl"
             #include "OceanWaves.hlsl"
 
             struct Attributes

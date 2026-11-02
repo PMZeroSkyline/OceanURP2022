@@ -9,14 +9,25 @@ public class OceanRendererFeature : ScriptableRendererFeature
         public OceanPass()
         {
             renderPassEvent = RenderPassEvent.BeforeRenderingTransparents;
+            ConfigureInput(ScriptableRenderPassInput.Depth);
         }
-        public override void OnCameraSetup(CommandBuffer cmd, ref RenderingData renderingData)
+
+        public override void OnCameraSetup(
+            CommandBuffer cmd,
+            ref RenderingData renderingData)
         {
             ScriptableRenderer renderer = renderingData.cameraData.renderer;
-            ConfigureTarget(renderer.cameraColorTargetHandle, renderer.cameraDepthTargetHandle);
+
+            ConfigureTarget(
+                renderer.cameraColorTargetHandle,
+                renderer.cameraDepthTargetHandle);
+
             ConfigureClear(ClearFlag.None, Color.clear);
         }
-        public override void Execute(ScriptableRenderContext context, ref RenderingData renderingData)
+
+        public override void Execute(
+            ScriptableRenderContext context,
+            ref RenderingData renderingData)
         {
             Camera camera = renderingData.cameraData.camera;
             CommandBuffer cmd = CommandBufferPool.Get("Ocean Surface");
@@ -27,11 +38,14 @@ public class OceanRendererFeature : ScriptableRendererFeature
                 {
                     if (domain == null || !domain.isActiveAndEnabled)
                         continue;
+
                     int layerMask = 1 << domain.gameObject.layer;
                     if ((camera.cullingMask & layerMask) == 0)
                         continue;
+
                     domain.Draw(cmd, camera);
                 }
+
                 context.ExecuteCommandBuffer(cmd);
             }
             finally
@@ -39,13 +53,18 @@ public class OceanRendererFeature : ScriptableRendererFeature
                 CommandBufferPool.Release(cmd);
             }
         }
-    };
+    }
+
     OceanPass pass;
+
     public override void Create()
     {
         pass = new OceanPass();
     }
-    public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
+
+    public override void AddRenderPasses(
+        ScriptableRenderer renderer,
+        ref RenderingData renderingData)
     {
         if (OceanDomain.Active.Count == 0)
             return;
@@ -54,7 +73,8 @@ public class OceanRendererFeature : ScriptableRendererFeature
         if (cameraData.renderType == CameraRenderType.Overlay)
             return;
 
-        if (cameraData.cameraType != CameraType.Game && cameraData.cameraType != CameraType.SceneView)
+        if (cameraData.cameraType != CameraType.Game
+            && cameraData.cameraType != CameraType.SceneView)
             return;
 
         renderer.EnqueuePass(pass);

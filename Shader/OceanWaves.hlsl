@@ -9,8 +9,7 @@ void OceanEvaluateShoreWave(
     height = 0.0;
     gradient = float2(0.0, 0.0);
 
-    // Legacy UV/height previews do not supply coast inputs yet.
-#if defined(OCEAN_COAST_DATA_INCLUDED)
+#if defined(OCEAN_COAST_DATA_INCLUDED) && defined(OCEAN_SHORE_LUT_INCLUDED)
     if (_ShoreWave.x <= 0.0)
         return;
 
@@ -19,35 +18,58 @@ void OceanEvaluateShoreWave(
         return;
 
     float amplitude = _ShoreWave.x;
-    float k = _ShoreWave.y;
+    float inverseWavelength = _ShoreWave.y / TWO_PI;
     float speed = _ShoreWave.z;
     float range = _ShoreWave.w;
 
     float distanceMetres = coast.signedDistance;
-    float u = distanceMetres / range;
+    float v = distanceMetres / range;
 
-    if (u <= 0.0 || u >= 1.0)
+    if (v <= 0.0 || v >= 1.0)
         return;
 
-    // Zero height and zero slope at both ends of the shore band.
-    float arch = u * (1.0 - u);
-    float envelope = 16.0 * arch * arch;
-    float envelopeSlope =
-        32.0 * arch * (1.0 - 2.0 * u) / range;
+    float u =
+        (distanceMetres + speed * _WaveTime)
+        * inverseWavelength;
 
-    // Positive speed moves the crests toward smaller coast distances.
-    float phase = k * (distanceMetres + speed * _WaveTime);
+    float lutHeight;
+    float2 derivativeUV;
 
-    float sine;
-    float cosine;
-    sincos(phase, sine, cosine);
+    OceanSampleShoreLut(
+        float2(u, v),
+        lutHeight,
+        derivativeUV);
 
-    height = amplitude * envelope * sine;
+    height = amplitude * lutHeight;
 
+    // Distance changes both U and V.
     float slope = amplitude * (
-        envelopeSlope * sine
-        + envelope * k * cosine);
+        derivativeUV.x * inverseWavelength
+        + derivativeUV.y / range);
 
+    gradient = slope * coast.distanceGradient;
+#endif
+}
+
+void OceanEvaluateOffshoreWeight(
+    float2 restXZ,
+    out float weight,
+    out float2 gradient)
+{
+    weight = 1.0;
+    gradient = float2(0.0, 0.0);
+
+#if defined(OCEAN_COAST_DATA_INCLUDED) && defined(OCEAN_SHORE_LUT_INCLUDED)
+    OceanCoastSample coast = OceanSampleCoast(restXZ);
+    if (coast.valid < 0.5)
+        return;
+
+    float range = max(_ShoreWave.w, 0.1);
+    float u = saturate(coast.signedDistance / range);
+
+    weight = u * u * (3.0 - 2.0 * u);
+
+    float slope = 6.0 * u * (1.0 - u) / range;
     gradient = slope * coast.distanceGradient;
 #endif
 }
@@ -57,10 +79,9 @@ void OceanEvaluateSurface(
     out float3 positionWS,
     out float3 normalWS)
 {
-    positionWS = float3(p.x, _SeaLevel, p.y);
-
-    float3 tangentX = float3(1.0, 0.0, 0.0);
-    float3 tangentZ = float3(0.0, 0.0, 1.0);
+    float3 displacement = float3(0.0, 0.0, 0.0);
+    float3 derivativeX = float3(0.0, 0.0, 0.0);
+    float3 derivativeZ = float3(0.0, 0.0, 0.0);
 
     [loop]
     for (int i = 0; i < _WaveCount; i++)
@@ -82,7 +103,7 @@ void OceanEvaluateSurface(
         float cosine;
         sincos(phase, sine, cosine);
 
-        positionWS += float3(
+        displacement += float3(
             direction.x * horizontal * cosine,
             amplitude * sine,
             direction.y * horizontal * cosine);
@@ -93,20 +114,37 @@ void OceanEvaluateSurface(
         float mixed =
             -horizontalSlope * direction.x * direction.y;
 
-        tangentX += float3(
+        derivativeX += float3(
             -horizontalSlope * direction.x * direction.x,
             verticalSlope * direction.x,
             mixed);
 
-        tangentZ += float3(
+        derivativeZ += float3(
             mixed,
             verticalSlope * direction.y,
             -horizontalSlope * direction.y * direction.y);
     }
 
+    float weight;
+    float2 weightGradient;
+    OceanEvaluateOffshoreWeight(p, weight, weightGradient);
+
+    float3 basePosition = float3(p.x, _SeaLevel, p.y);
+    positionWS = basePosition + weight * displacement;
+
+    // Product rule: d(w * D) = w * dD + D * dw.
+    float3 tangentX = float3(1.0, 0.0, 0.0)
+        + weight * derivativeX
+        + displacement * weightGradient.x;
+
+    float3 tangentZ = float3(0.0, 0.0, 1.0)
+        + weight * derivativeZ
+        + displacement * weightGradient.y;
+
     float shoreHeight;
     float2 shoreGradient;
 
+    // Shore waves remain anchored to the displaced world XZ.
     OceanEvaluateShoreWave(
         positionWS.xz,
         shoreHeight,
