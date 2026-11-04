@@ -31,7 +31,16 @@ Shader "Hidden/Ocean/HeightBake"
                 float4 _HeightRange;
             CBUFFER_END
 
-            #include "OceanCoordinates.hlsl"
+            float2 OceanWorldToUV(float2 worldXZ)
+{
+    return (worldXZ - _OceanRect.xy) * _OceanRect.w;
+}
+
+float2 OceanUVToWorld(float2 uv)
+{
+    return _OceanRect.xy + uv * _OceanRect.z;
+}
+
 
             struct Varyings
             {

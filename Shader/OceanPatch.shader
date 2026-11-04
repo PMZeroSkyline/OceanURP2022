@@ -2,72 +2,51 @@ Shader "Ocean/Patch"
 {
     Properties
     {
+        _BaseColor("Surface Color", Color) = (0.34, 0.47, 0.53, 1)
+        _DetailScale("Detail Cycles Per Metre", Float) = 0.8
+        _DetailStrength("Detail Normal Strength", Range(0, 1)) = 0.2
+        _DetailSpeed("Detail Animation Speed", Float) = 1
+        [Normal] [NoScaleOffset] _DetailNormalMap("Detail Normal Map (Optional)", 2D) = "bump" {}
+        _DetailMapStrength("Detail Map Strength", Range(0, 2)) = 1
+        _FoamStrength("Foam Strength", Range(0, 1)) = 0
+        _FoamScale("Foam Cycles Per Metre", Float) = 2
+        _FoamSpeed("Foam Animation Speed", Float) = 1
+        _FoamBreakup("Foam Breakup", Range(0, 1)) = 0.65
     }
 
     SubShader
     {
-        Tags
-        {
-            "RenderPipeline" = "UniversalPipeline"
-            "RenderType" = "Opaque"
-            "Queue" = "Geometry"
-        }
-
+        Tags { "RenderPipeline" = "UniversalPipeline" "RenderType" = "Opaque" "Queue" = "Geometry" }
         Pass
         {
-            Name "PatchDebug"
-
-            Tags
-            {
-                "LightMode" = "UniversalForwardOnly"
-            }
-
-            Cull Back
+            Name "OceanSurface"
+            Tags { "LightMode" = "UniversalForwardOnly" }
+            Cull Off
             ZWrite On
             ZTest LEqual
 
             HLSLPROGRAM
-
             #pragma target 4.5
             #pragma vertex Vert
             #pragma fragment Frag
             #pragma multi_compile_instancing
 
-            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+            #include "OceanWaves.hlsl"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
 
-            struct OceanPatch
-            {
-                float4 rect;
-                float4 edges;
-            };
-
-            StructuredBuffer<OceanPatch> _Patches;
-
-            TEXTURE2D(_OceanCoastMap);
-            TEXTURE2D(_OceanShoreLut);
-
+            TEXTURE2D(_DetailNormalMap);
+            SAMPLER(sampler_DetailNormalMap);
             CBUFFER_START(UnityPerMaterial)
-                float _SeaLevel;
-                float _PatchCells;
-
-                float4 _WaveShapes[4];
-                float4 _WaveMotions[4];
-                int _WaveCount;
-
-                float _WaveTime;
-                float _StitchEdges;
-                float4 _DebugView;
-
-                float4 _OceanRect;
-                float4 _ShoreWave;
-                float _HasCoastMap;
+                half4 _BaseColor;
+                float _DetailScale;
+                float _DetailStrength;
+                float _DetailSpeed;
+                float _DetailMapStrength;
+                float _FoamStrength;
+                float _FoamScale;
+                float _FoamSpeed;
+                float _FoamBreakup;
             CBUFFER_END
-
-            #include "OceanCoordinates.hlsl"
-            #include "OceanCoastData.hlsl"
-            #include "OceanShoreLut.hlsl"
-            #include "OceanWaves.hlsl"
 
             struct Attributes
             {
@@ -78,110 +57,49 @@ Shader "Ocean/Patch"
             struct Varyings
             {
                 float4 positionCS : SV_POSITION;
-                float2 uv : TEXCOORD0;
-                half3 color : TEXCOORD1;
-                nointerpolation float4 coarseEdges : TEXCOORD2;
-                float3 normalWS : TEXCOORD3;
+                float3 positionWS : TEXCOORD0;
+                float3 normalWS : TEXCOORD1;
+                float foam : TEXCOORD2;
             };
 
             Varyings Vert(Attributes input)
             {
                 Varyings output;
-
                 OceanPatch patch = _Patches[input.instanceID];
-
-                float3 positionWS;
-                float3 normalWS;
-
-                OceanEvaluatePatch(
-                    input.positionOS.xz,
-                    patch.rect,
-                    patch.edges,
-                    positionWS,
-                    normalWS);
-
-                output.positionCS = TransformWorldToHClip(positionWS);
-                output.normalWS = normalWS;
-                output.uv = input.positionOS.xz;
-
-                output.color = 0.5 + 0.4 * cos(
-                    float3(0.0, 2.0, 4.0) + patch.rect.w * 1.7);
-
-                float cell = patch.rect.z / _PatchCells;
-
-                output.coarseEdges = step(
-                    float4(1.5, 1.5, 1.5, 1.5),
-                    patch.edges / cell);
-
+                OceanEvaluatePatch(input.positionOS.xz, patch.rect, patch.edges,
+                    output.positionWS, output.normalWS, output.foam);
+                output.positionCS = TransformWorldToHClip(output.positionWS);
                 return output;
             }
 
-            half4 Frag(Varyings input) : SV_Target
+            half4 Frag(Varyings input, FRONT_FACE_TYPE face : FRONT_FACE_SEMANTIC) : SV_Target
             {
-                float3 normalWS = normalize(input.normalWS);
+                // Match the displaced surface's termination to the baked terrain.
+                if (_HasHeightMap > 0.5)
+                {
+                    float2 uv = OceanWorldToUV(input.positionWS.xz);
+                    if (all(uv >= 0.0) && all(uv <= 1.0))
+                    {
+                        float ground = SAMPLE_TEXTURE2D_LOD(_OceanHeightMap, sampler_OceanHeightMap, uv, 0).r;
+                        clip(input.positionWS.y - ground - 0.003);
+                    }
+                }
 
-                if (_DebugView.w > 0.5)
-                    return half4(normalWS * 0.5 + 0.5, 1.0);
+                float2 detailUV = input.positionWS.xz * max(_DetailScale, 0.0)
+                    + _WaveTime * _DetailSpeed * float2(0.025, 0.017);
+                float3 mapNormal = UnpackNormalScale(
+                    SAMPLE_TEXTURE2D(_DetailNormalMap, sampler_DetailNormalMap, detailUV), _DetailMapStrength);
+                float3 normal = OceanSurfaceNormal(input.positionWS.xz, input.normalWS, _WaveTime,
+                    _DetailScale, _DetailStrength, _DetailSpeed, mapNormal);
+                normal *= IS_FRONT_VFACE(face, 1.0, -1.0);
+                float foam = OceanSurfaceFoam(input.foam, input.positionWS.xz, _WaveTime,
+                    _FoamScale, _FoamSpeed, _FoamBreakup) * _FoamStrength;
 
-                float3 color = lerp(
-                    half3(0.03, 0.25, 0.35),
-                    input.color,
-                    _DebugView.x);
-
-                Light mainLight = GetMainLight();
-
-                half diffuse = saturate(
-                    dot(normalWS, mainLight.direction));
-
-                color *= 0.2 + mainLight.color * diffuse;
-
-                float2 cell = input.uv * _PatchCells;
-                float2 edge = min(frac(cell), 1.0 - frac(cell));
-
-                edge /= max(fwidth(cell), 0.0001);
-
-                float grid = 1.0 - smoothstep(
-                    0.5,
-                    1.0,
-                    min(edge.x, edge.y));
-
-                color = lerp(
-                    color,
-                    color * 0.25,
-                    grid * _DebugView.y);
-
-                float4 distanceToEdge = float4(
-                    input.uv.x,
-                    1.0 - input.uv.x,
-                    input.uv.y,
-                    1.0 - input.uv.y);
-
-                float2 pixelWidth = max(
-                    fwidth(input.uv),
-                    0.00001);
-
-                float4 edgePixels = distanceToEdge / float4(
-                    pixelWidth.x,
-                    pixelWidth.x,
-                    pixelWidth.y,
-                    pixelWidth.y);
-
-                float4 marks =
-                    (1.0 - smoothstep(0.75, 2.25, edgePixels))
-                    * input.coarseEdges;
-
-                float highlight = max(
-                    max(marks.x, marks.y),
-                    max(marks.z, marks.w));
-
-                color = lerp(
-                    color,
-                    half3(1.0, 0.15, 0.03),
-                    highlight * _DebugView.z);
-
+                Light light = GetMainLight();
+                half3 color = lerp(_BaseColor.rgb, half3(0.92, 0.96, 0.97), foam);
+                color *= 0.22 + 0.78 * saturate(dot(normal, light.direction)) * light.color;
                 return half4(color, 1.0);
             }
-
             ENDHLSL
         }
     }

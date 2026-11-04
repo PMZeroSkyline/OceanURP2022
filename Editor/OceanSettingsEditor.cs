@@ -1,194 +1,162 @@
 using System;
+using System.Linq;
 using UnityEditor;
 using UnityEngine;
 
 [CustomEditor(typeof(OceanSettings))]
 public sealed class OceanSettingsEditor : Editor
 {
-    float previewDistance = 0.5f;
-    readonly Vector3[] points = new Vector3[257];
-
     public override void OnInspectorGUI()
     {
         DrawDefaultInspector();
         var settings = (OceanSettings)target;
-
         EditorGUILayout.Space();
         EditorGUILayout.HelpBox(
-            "U: wave cycle. V: distance / shore range. G: signed height.\n"
-            + "Edit curves, then Generate. The preview reads the saved LUT.",
+            "Empty stages use the source profile. Import stages to edit wave shapes, then Generate.\n"
+            + "Curve X = wave phase; Forward / Height = displacement divided by wave width.",
             MessageType.Info);
 
         bool canGenerate = AssetDatabase.IsMainAsset(settings)
             && !EditorApplication.isPlayingOrWillChangePlaymode;
-
         using (new EditorGUI.DisabledScope(!canGenerate))
         {
+            if (GUILayout.Button("Use Reference Profile"))
+                Run(() => OceanShoreLutGenerator.UseReference(settings), settings);
+            if (GUILayout.Button("Import Reference as Editable Stages"))
+                Run(() => OceanShoreLutGenerator.ImportEditable(settings), settings);
             if (GUILayout.Button("Generate Shore LUT"))
-            {
-                try
-                {
-                    Bake(settings);
-                }
-                catch (Exception error)
-                {
-                    Debug.LogException(error, settings);
-                }
-            }
+                Run(() => OceanShoreLutGenerator.Bake(settings), settings);
         }
-
-        using (new EditorGUI.DisabledScope(true))
-        {
-            EditorGUILayout.ObjectField(
-                "Generated LUT",
-                settings.shoreLut,
-                typeof(Texture2D),
-                false);
-
-            EditorGUILayout.FloatField(
-                "Max Absolute Height",
-                settings.shoreLutMaxHeight);
-        }
-
-        Texture2D texture = settings.shoreLut;
-        if (texture == null || !texture.isReadable)
-            return;
-
-        EditorGUILayout.LabelField(
-            "LUT Size",
-            $"{texture.width} x {texture.height}");
-
-        previewDistance = EditorGUILayout.Slider(
-            "Preview Distance / Range",
-            previewDistance,
-            0f,
-            1f);
-
-        DrawPreview(texture, settings.shoreLutMaxHeight);
-
-        EditorGUILayout.LabelField(
-            "Phase 0 → 1; horizontal line = zero height.");
     }
 
-    static bool Finite(float value) =>
-        !float.IsNaN(value) && !float.IsInfinity(value);
+    static void Run(Action action, OceanSettings settings)
+    {
+        try
+        {
+            action();
+        }
+        catch (Exception error)
+        {
+            Debug.LogException(error, settings);
+        }
+    }
+}
 
-    static void ValidateCurve(
-        AnimationCurve curve,
-        string label,
-        bool periodic)
+public static class OceanShoreLutGenerator
+{
+    // User-provided FluidFlux Unity port: original signed profile, not a synthetic replacement.
+    const string ReferencePath =
+        "Assets/FluxFluid/Runtime/Resources/FluidFlux/T_DefaultWaveProfile_Forard.png";
+
+    static bool Finite(float x) => !float.IsNaN(x) && !float.IsInfinity(x);
+
+    static Texture2D Source(OceanSettings settings)
+    {
+        if (settings.shoreSource == null)
+            settings.shoreSource = AssetDatabase.LoadAssetAtPath<Texture2D>(ReferencePath);
+        if (settings.shoreSource == null || !settings.shoreSource.isReadable)
+            throw new InvalidOperationException("A readable reference profile is required.");
+        return settings.shoreSource;
+    }
+
+    // Hardware bilinear convention: texel centres, repeating U and clamped V.
+    public static Color SampleTexture(Texture2D texture, float u, float v)
+    {
+        float x = Mathf.Repeat(u, 1f) * texture.width - .5f;
+        float y = Mathf.Clamp(v * texture.height - .5f, 0f, texture.height - 1f);
+        int ix = Mathf.FloorToInt(x), y0 = Mathf.FloorToInt(y);
+        int x0 = (ix + texture.width) % texture.width;
+        int x1 = (x0 + 1) % texture.width, y1 = Mathf.Min(y0 + 1, texture.height - 1);
+        return Color.Lerp(
+            Color.Lerp(texture.GetPixel(x0, y0), texture.GetPixel(x1, y0), x - ix),
+            Color.Lerp(texture.GetPixel(x0, y1), texture.GetPixel(x1, y1), x - ix), y - y0);
+    }
+
+    static Color SampleSource(Texture2D source, Vector4 decode, float u, float life)
+    {
+        // Unity imports the PNG bottom-up; its original lifecycle starts at the top.
+        Color value = SampleTexture(source, u, 1f - life);
+        value.r = (value.r + decode.x) * decode.z;
+        value.g = (value.g + decode.y) * decode.w;
+        value.a = 1f;
+        return value;
+    }
+
+    static void ValidateCurve(AnimationCurve curve)
     {
         if (curve == null || curve.length < 2)
-        {
-            throw new InvalidOperationException(
-                label + " needs at least two keys.");
-        }
-
+            throw new InvalidOperationException("Each curve needs at least two keys.");
         Keyframe[] keys = curve.keys;
-
         foreach (Keyframe key in keys)
-        {
             if (!Finite(key.time) || !Finite(key.value)
                 || !Finite(key.inTangent) || !Finite(key.outTangent))
-            {
-                throw new InvalidOperationException(
-                    label + " needs finite values and tangents.");
-            }
-        }
-
-        Keyframe first = keys[0];
-        Keyframe last = keys[keys.Length - 1];
-
-        if (Mathf.Abs(first.time) > 0.00001f
-            || Mathf.Abs(last.time - 1f) > 0.00001f)
-        {
-            throw new InvalidOperationException(
-                label + " must start at time 0 and end at time 1.");
-        }
-
-        if (periodic)
-        {
-            if (Mathf.Abs(first.value - last.value) > 0.00001f
-                || Mathf.Abs(first.outTangent - last.inTangent) > 0.0001f)
-            {
-                throw new InvalidOperationException(
-                    label
-                    + " needs matching endpoint values and matching inside tangents.");
-            }
-        }
-        else if (Mathf.Abs(first.value) > 0.00001f
-            || Mathf.Abs(last.value) > 0.00001f
-            || Mathf.Abs(first.outTangent) > 0.0001f
-            || Mathf.Abs(last.inTangent) > 0.0001f)
-        {
-            throw new InvalidOperationException(
-                label
-                + " needs zero endpoint values and zero inside tangents.");
-        }
+                throw new InvalidOperationException("Curve values and tangents must be finite.");
+        if (Mathf.Abs(keys[0].time) > .00001f || Mathf.Abs(keys[keys.Length - 1].time - 1f) > .00001f)
+            throw new InvalidOperationException("Profile curves must span U = 0..1.");
+        if (Mathf.Abs(keys[0].value - keys[keys.Length - 1].value) > .00001f)
+            throw new InvalidOperationException("Periodic profile endpoint values must match.");
     }
 
-    static Texture2D Generate(
-        OceanSettings settings,
-        out float maxHeight)
+    static Color Evaluate(OceanSettings.ShoreStage stage, float u) => new Color(
+        stage.forward.Evaluate(u), stage.height.Evaluate(u), stage.foam.Evaluate(u), 1f);
+
+    public static Texture2D Generate(OceanSettings settings, out Vector2 bounds)
     {
-        ValidateCurve(settings.shoreProfile, "Shore Profile", true);
-        ValidateCurve(settings.shoreEnvelope, "Shore Envelope", false);
-
-        int width = Mathf.Clamp(
-            settings.shoreLutResolution.x, 16, 1024);
-
-        int height = Mathf.Clamp(
-            settings.shoreLutResolution.y, 4, 256);
-
+        var stages = (settings.shoreStages ?? Array.Empty<OceanSettings.ShoreStage>())
+            .Where(s => s != null).OrderBy(s => s.life).ToArray();
+        for (int i = 0; i < stages.Length; i++)
+        {
+            var stage = stages[i];
+            if (!Finite(stage.life) || stage.life < 0f || stage.life > 1f
+                || (i > 0 && stage.life <= stages[i - 1].life))
+                throw new InvalidOperationException("Stage life values must be distinct and within 0..1.");
+            ValidateCurve(stage.forward);
+            ValidateCurve(stage.height);
+            ValidateCurve(stage.foam);
+        }
+        Texture2D source = stages.Length == 0 ? Source(settings) : null;
+        int width = Mathf.Clamp(settings.shoreLutResolution.x, 16, 1024);
+        int height = Mathf.Clamp(settings.shoreLutResolution.y, 4, 512);
         var pixels = new Color[width * height];
-        maxHeight = 0f;
-
+        bounds = Vector2.zero;
         for (int y = 0; y < height; y++)
         {
-            // V includes both endpoints of the shore band.
-            float v = y / (float)(height - 1);
-            float envelope = settings.shoreEnvelope.Evaluate(v);
+            float life = (y + .5f) / height;
+            int next = 0;
+            while (next < stages.Length - 1 && stages[next].life < life)
+                next++;
 
             for (int x = 0; x < width; x++)
             {
-                // U is periodic and samples texel centers.
-                float u = (x + 0.5f) / width;
-
-                float value =
-                    settings.shoreProfile.Evaluate(u) * envelope;
-
-                if (!Finite(value))
+                float u = (x + .5f) / width;
+                Color value;
+                if (source != null)
                 {
-                    throw new InvalidOperationException(
-                        "The LUT contains a non-finite height.");
+                    value = SampleSource(source, settings.shoreSourceDecode, u, life);
                 }
-
-                // Exactly zero at both band endpoints, including roundoff.
-                if (y == 0 || y == height - 1)
-                    value = 0f;
-
-                pixels[y * width + x] =
-                    new Color(0f, value, 0f, 1f);
-
-                maxHeight = Mathf.Max(
-                    maxHeight,
-                    Mathf.Abs(value));
+                else
+                {
+                    var b = stages[next];
+                    var a = stages[Mathf.Max(0, next - 1)];
+                    value = next == 0 || life >= b.life
+                        ? Evaluate(b, u)
+                        : Color.Lerp(Evaluate(a, u), Evaluate(b, u), Mathf.InverseLerp(a.life, b.life, life));
+                }
+                if (!Finite(value.r) || !Finite(value.g) || !Finite(value.b))
+                    throw new InvalidOperationException("The LUT contains non-finite samples.");
+                value.b = Mathf.Clamp01(value.b);
+                pixels[y * width + x] = value;
+                bounds.x = Mathf.Max(bounds.x, Mathf.Abs(value.r));
+                bounds.y = Mathf.Max(bounds.y, Mathf.Abs(value.g));
             }
         }
-
-        var texture = new Texture2D(
-            width,
-            height,
-            TextureFormat.RGBAFloat,
-            false,
-            true)
+        var texture = new Texture2D(width, height, TextureFormat.RGBAFloat, false, true)
         {
-            name = "Shore Wave LUT",
+            name = "Shore LUT - Reference Forward Height Foam",
             wrapModeU = TextureWrapMode.Repeat,
             wrapModeV = TextureWrapMode.Clamp,
             filterMode = FilterMode.Bilinear
         };
-
         try
         {
             texture.SetPixels(pixels);
@@ -197,33 +165,19 @@ public sealed class OceanSettingsEditor : Editor
         }
         catch
         {
-            DestroyImmediate(texture);
+            UnityEngine.Object.DestroyImmediate(texture);
             throw;
         }
     }
 
-    static void Bake(OceanSettings settings)
+    public static void Bake(OceanSettings settings)
     {
         string path = AssetDatabase.GetAssetPath(settings);
-
-        if (string.IsNullOrEmpty(path)
-            || !AssetDatabase.IsMainAsset(settings))
-        {
-            throw new InvalidOperationException(
-                "Save OceanSettings as a main asset first.");
-        }
-
-        if (settings.shoreLut != null
-            && AssetDatabase.GetAssetPath(settings.shoreLut) != path)
-        {
-            throw new InvalidOperationException(
-                "The generated LUT must belong to these settings.");
-        }
-
-        Texture2D generated = Generate(
-            settings,
-            out float maxHeight);
-
+        if (!AssetDatabase.IsMainAsset(settings))
+            throw new InvalidOperationException("Save OceanSettings as a main asset first.");
+        if (settings.shoreLut != null && AssetDatabase.GetAssetPath(settings.shoreLut) != path)
+            throw new InvalidOperationException("The generated LUT must belong to these settings.");
+        Texture2D generated = Generate(settings, out Vector2 bounds);
         try
         {
             if (settings.shoreLut == null)
@@ -233,105 +187,74 @@ public sealed class OceanSettingsEditor : Editor
             }
             else
             {
-                // Preserve the existing texture reference when regenerating.
-                EditorUtility.CopySerialized(
-                    generated,
-                    settings.shoreLut);
-
+                EditorUtility.CopySerialized(generated, settings.shoreLut);
                 settings.shoreLut.Apply(false, false);
             }
-
-            settings.shoreLutMaxHeight = maxHeight;
-
+            settings.shoreLutMaxForward = bounds.x;
+            settings.shoreLutMaxHeight = bounds.y;
             EditorUtility.SetDirty(settings.shoreLut);
             EditorUtility.SetDirty(settings);
             AssetDatabase.SaveAssetIfDirty(settings);
+            SceneView.RepaintAll();
         }
         finally
         {
             if (!AssetDatabase.Contains(generated))
-                DestroyImmediate(generated);
+                UnityEngine.Object.DestroyImmediate(generated);
         }
     }
 
-    // Same U/V sample layout that the shader will use next lesson.
-    static float SampleHeight(
-        Texture2D texture,
-        float u,
-        float v)
+    public static void UseReference(OceanSettings settings)
     {
-        float x = u * texture.width - 0.5f;
-        float y = Mathf.Clamp01(v) * (texture.height - 1);
-
-        int ix = Mathf.FloorToInt(x);
-        int y0 = Mathf.FloorToInt(y);
-        int y1 = Mathf.Min(y0 + 1, texture.height - 1);
-
-        int x0 =
-            (ix % texture.width + texture.width) % texture.width;
-
-        int x1 = (x0 + 1) % texture.width;
-
-        float tx = x - ix;
-        float ty = y - y0;
-
-        float a = Mathf.Lerp(
-            texture.GetPixel(x0, y0).g,
-            texture.GetPixel(x1, y0).g,
-            tx);
-
-        float b = Mathf.Lerp(
-            texture.GetPixel(x0, y1).g,
-            texture.GetPixel(x1, y1).g,
-            tx);
-
-        return Mathf.Lerp(a, b, ty);
+        Undo.RecordObject(settings, "Use Reference Shore Profile");
+        Texture2D source = Source(settings);
+        settings.shoreStages = Array.Empty<OceanSettings.ShoreStage>();
+        settings.shoreLutResolution = new Vector2Int(source.width, source.height);
+        Bake(settings);
     }
 
-    void DrawPreview(Texture2D texture, float maxHeight)
+    public static void ImportEditable(OceanSettings settings)
     {
-        Rect rect = GUILayoutUtility.GetRect(
-            100f,
-            160f,
-            GUILayout.ExpandWidth(true));
-
-        if (Event.current.type != EventType.Repaint)
-            return;
-
-        EditorGUI.DrawRect(
-            rect,
-            new Color(0.06f, 0.07f, 0.09f));
-
-        float scale = (rect.height * 0.5f - 8f)
-            / Mathf.Max(maxHeight, 0.001f);
-
-        for (int i = 0; i < points.Length; i++)
+        Undo.RecordObject(settings, "Import Reference Shore Stages");
+        Texture2D source = Source(settings);
+        var stages = new OceanSettings.ShoreStage[source.height];
+        for (int y = 0; y < source.height; y++)
         {
-            float u = i / (float)(points.Length - 1);
-            float value = SampleHeight(
-                texture,
-                u,
-                previewDistance);
-
-            points[i] = new Vector3(
-                rect.x + 8f + u * (rect.width - 16f),
-                rect.center.y - value * scale,
-                0f);
+            float life = (y + .5f) / source.height;
+            var keys = new[]
+            {
+                new Keyframe[source.width + 2],
+                new Keyframe[source.width + 2],
+                new Keyframe[source.width + 2]
+            };
+            for (int x = 0; x < source.width + 2; x++)
+            {
+                float u = x == 0 ? 0f : x == source.width + 1 ? 1f : (x - .5f) / source.width;
+                Color value = SampleSource(source, settings.shoreSourceDecode, u, life);
+                for (int channel = 0; channel < 3; channel++)
+                    keys[channel][x] = new Keyframe(u, value[channel]);
+            }
+            stages[y] = new OceanSettings.ShoreStage
+            {
+                life = life,
+                forward = LinearCurve(keys[0]),
+                height = LinearCurve(keys[1]),
+                foam = LinearCurve(keys[2])
+            };
         }
+        settings.shoreStages = stages;
+        settings.shoreLutResolution = new Vector2Int(source.width, source.height);
+        Bake(settings);
+    }
 
-        Color previous = Handles.color;
-
-        Handles.BeginGUI();
-
-        Handles.color = Color.gray;
-        Handles.DrawLine(
-            new Vector3(rect.x, rect.center.y, 0f),
-            new Vector3(rect.xMax, rect.center.y, 0f));
-
-        Handles.color = Color.cyan;
-        Handles.DrawAAPolyLine(2f, points);
-
-        Handles.EndGUI();
-        Handles.color = previous;
+    static AnimationCurve LinearCurve(Keyframe[] keys)
+    {
+        var curve = new AnimationCurve(keys);
+        for (int i = 0; i < keys.Length; i++)
+        {
+            AnimationUtility.SetKeyLeftTangentMode(curve, i, AnimationUtility.TangentMode.Linear);
+            AnimationUtility.SetKeyRightTangentMode(curve, i, AnimationUtility.TangentMode.Linear);
+        }
+        return curve;
     }
 }

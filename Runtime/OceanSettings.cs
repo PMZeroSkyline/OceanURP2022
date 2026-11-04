@@ -8,6 +8,16 @@ public class OceanSettings : ScriptableObject
     const float HorizontalSlopeLimit = 0.8f;
 
     [System.Serializable]
+    public class ShoreStage
+    {
+        [Tooltip("Lifecycle coordinate; the generator interpolates between stages.")]
+        [Range(0f, 1f)] public float life;
+        public AnimationCurve forward = AnimationCurve.Linear(0, 0, 1, 0);
+        public AnimationCurve height = AnimationCurve.Linear(0, 0, 1, 0);
+        public AnimationCurve foam = AnimationCurve.Linear(0, 0, 1, 0);
+    }
+
+    [System.Serializable]
     public struct Wave
     {
         [Min(0f)] public float amplitude;
@@ -17,15 +27,13 @@ public class OceanSettings : ScriptableObject
         [Range(0f, 1f)] public float horizontalRatio;
     }
 
-    public Material surfaceMaterial;
-
     [Header("Domain and LOD")]
     [Min(1f)] public float size = 1000f;
-    [Range(0, 10)] public int maxDepth = 8;
-    [Range(1f, 64f)] public float pixelsPerCell = 12f;
-    [Range(1, 1024)] public int maxPatches = 512;
+    [Range(0, 10)] public int maxDepth = 10;
+    [Range(1f, 64f)] public float pixelsPerCell = 3f;
+    [Range(1, 1024)] public int maxPatches = 1024;
 
-    [Header("Waves")]
+    [Header("Offshore Waves")]
     [Tooltip("最多使用前 4 组波。振幅为 0 时，该组不产生位移。")]
     public Wave[] waves =
     {
@@ -57,59 +65,45 @@ public class OceanSettings : ScriptableObject
 
     public bool stitchEdges = true;
 
-    [Header("Debug")]
-    public bool showLod = true;
-    public bool showGrid = true;
-    public bool showEdges = true;
-    public bool showNormals = false;
-
-
-    [Header("Height Bake")]
+    [Header("Height and Coast Bake")]
     public LayerMask groundLayers = ~0;
-    [Range(16, 2048)] public int bakeResolution = 512;
+    [Range(16, 2048)] public int bakeResolution = 1024;
     [Min(0.1f)] public float captureBelow = 50f;
     [Min(0.1f)] public float captureAbove = 50f;
 
-    public enum CoastView
-    {
-        Distance,
-        OffshoreDirection,
-        NearestUV,
-        LandWater
-    }
-    [Header("Coast Bake")]
     public ComputeShader coastCompute;
 
-    [Header("Coast Preview")]
-    public CoastView coastView = CoastView.Distance;
-
-    [Min(0.01f)] public float coastDisplayRange = 100f;
-    [Min(0.01f)] public float coastContourSpacing = 10f;
-
     [Header("Shore Wave")]
+    [Tooltip("Height multiplier; the LUT stores displacement as a fraction of wavelength.")]
     [Min(0f)] public float shoreAmplitude = 1f;
-    [Min(0.1f)] public float shoreWavelength = 20f;
-    public float shoreSpeed = 2f;
+    [Min(0.1f)] public float shoreWavelength = 12f;
+    [Tooltip("Travel speed towards the coast, in metres per second.")]
+    public float shoreSpeed = 3.48f;
     [Min(0.1f)] public float shoreRange = 60f;
 
+    [Tooltip("Forward displacement multiplier; 1 preserves the reference profile proportions.")]
+    [Min(0f)] public float shoreForward = 1f;
+    [Range(0f, 3f)] public float shoreFoam = 1f;
+    [Min(0.1f)] public float shoreFade = 0.4f;
+    [Tooltip("Breaking zone offset, in wavelengths.")]
+    public float shorePhaseOffset = 2.37f;
+    [Min(0.01f)] public float shoreLifeRate = 0.65f;
+    [Min(0.01f)] public float shoreGroundPrediction = 6f;
+    [Range(0f, 2f)] public float shoreVariation = 1f;
+    public Texture2D shoreNoise;
+    [Min(0f)] public float shoreNoisePhase = 0.7f;
+    [Min(0f)] public float shoreNoiseLife = 0.241935f;
+
     [Header("Shore LUT")]
-    public Vector2Int shoreLutResolution = new Vector2Int(256, 64);
+    public Texture2D shoreSource;
+    public Vector4 shoreSourceDecode = new Vector4(-0.330324f, 0f, 0.470531f, 0.124962f);
+    public Vector2Int shoreLutResolution = new Vector2Int(64, 128);
 
-    public AnimationCurve shoreProfile = new AnimationCurve(
-        new Keyframe(0f, 0f, 2f * Mathf.PI, 2f * Mathf.PI),
-        new Keyframe(0.25f, 1f, 0f, 0f),
-        new Keyframe(0.5f, 0f, -2f * Mathf.PI, -2f * Mathf.PI),
-        new Keyframe(0.75f, -1f, 0f, 0f),
-        new Keyframe(1f, 0f, 2f * Mathf.PI, 2f * Mathf.PI));
-
-    public AnimationCurve shoreEnvelope = new AnimationCurve(
-        new Keyframe(0f, 0f, 0f, 0f),
-        new Keyframe(0.5f, 1f, 0f, 0f),
-        new Keyframe(1f, 0f, 0f, 0f));
+    public ShoreStage[] shoreStages = new ShoreStage[0];
 
     [HideInInspector] public Texture2D shoreLut;
     [HideInInspector] public float shoreLutMaxHeight;
-
+    [HideInInspector] public float shoreLutMaxForward;
 
     public Vector4 GetShoreWaveData()
     {
@@ -119,6 +113,7 @@ public class OceanSettings : ScriptableObject
             shoreSpeed,
             Mathf.Max(0.1f, shoreRange));
     }
+
     public int WriteWaveData(Vector4[] shapes, Vector4[] motions, out Vector3 displacementExtent)
     {
         int count = Mathf.Min(waves == null ? 0 : waves.Length, MaxWaves);
@@ -142,7 +137,8 @@ public class OceanSettings : ScriptableObject
             totalSlope += horizontal * k;
         }
 
-        float scale = totalSlope > HorizontalSlopeLimit ? HorizontalSlopeLimit / totalSlope : 1f;
+        float scale = totalSlope > HorizontalSlopeLimit
+            ? HorizontalSlopeLimit / totalSlope : 1f;
 
         displacementExtent = Vector3.zero;
 
@@ -154,7 +150,10 @@ public class OceanSettings : ScriptableObject
             motion.x *= scale;
             motions[i] = motion;
 
-            displacementExtent += new Vector3(Mathf.Abs(shape.x) * motion.x, shape.z, Mathf.Abs(shape.y) * motion.x);
+            displacementExtent += new Vector3(
+                Mathf.Abs(shape.x) * motion.x,
+                shape.z,
+                Mathf.Abs(shape.y) * motion.x);
         }
 
         return count;
